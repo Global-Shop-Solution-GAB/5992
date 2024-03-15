@@ -1,0 +1,23 @@
+Program.Sub.Preflight.Start
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+v.Local.sSubject.Declare(String)
+v.Local.sEmail.Declare(String)
+v.Local.sAttachment.Declare(String)
+v.Local.sSwitches.Declare(String)
+
+'split out switches passsed from other script
+f.Intrinsic.String.Split(v.Caller.Switches,"!*!",v.Local.sSwitches)
+
+'set params from array of switches.
+f.Intrinsic.Control.If(v.Local.sSwitches.UBound,=,2)
+	v.Local.sEmail.Set(v.Local.sSwitches(0))
+	v.Local.sSubject.Set(v.Local.sSwitches(1))
+	v.Local.sAttachment.Set(v.Local.sSwitches(2))
+f.Intrinsic.Control.Else
+	f.Intrinsic.UI.Msgbox("Critical Error Occurred, Please Try Again!")
+f.Intrinsic.Control.EndIf
+
+f.Automation.MSOutlook.ComposeEmailHTMLModal(v.Local.sEmail,v.Local.sSubject,"",v.Local.sAttachment)
+Program.Sub.Main.End
