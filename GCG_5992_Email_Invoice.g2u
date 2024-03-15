@@ -1,0 +1,212 @@
+Program.Sub.Preflight.Start
+v.Global.sInvoiceDir.Declare(String)
+V.Global.bTracking.Declare(Boolean)
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+
+'this program was built for Thompson Surgical Onsite. 
+'when printing invoices, this will override the BI hook and ask the user if they want to print or email the invoice.
+'if they choose email, it will launch an outlook email with the pdf attached of the invoice.
+'it will use the primary contact email as the email address
+'this does not support multiple contacts being emailed at once, all other email addresses will need to be added manually.
+
+F.Intrinsic.Control.Try
+	V.Local.sError.Declare(String," ")
+	v.Local.sTemp.Declare(string)
+	v.Local.iRet.Declare(Long)
+	
+	f.ODBC.Connection!con.opencompanyconnection(120)
+
+	f.Intrinsic.Control.CallSub(printinvoice)
+	
+	'just call again to keep sending invoices until they close the browser window.
+	f.Intrinsic.String.Build("{0}\GCG_5358_Email_Invoice.g2u",v.Caller.GasDir,v.Local.sTemp)
+	f.Global.General.CallAsyncGAS(v.Local.sTemp,"",2,v.Local.iRet)
+	
+	F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+		F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}","",V.Ambient.NewLine,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Local.sError)
+		F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.EndIf
+Function.Intrinsic.Control.EndTry
+
+Program.Sub.Main.End
+
+Program.Sub.printinvoice.Start
+F.Intrinsic.Control.Try
+	V.Local.sError.Declare(String," ")
+	Variable.Local.sRet.Declare(string)
+	Variable.Local.sTemp.Declare(string)
+	Variable.Local.sTitles.Declare(string)
+	Variable.Local.iWidths.Declare(long)
+	v.Local.sSql.Declare(String)
+	V.Local.sParams.Declare(String)
+	V.Local.sValues.Declare(String)
+	V.Local.sInvoiceFQP.Declare(String)
+	V.Local.iRunID.Declare(Long)
+	V.Local.iLogID.Declare(Long)
+	V.Local.iRet.Declare(Long)
+	v.Local.sEmail.Declare(String)
+	v.Local.sSubject.Declare(String)
+	
+	f.Intrinsic.UI.InvokeWaitDialog("Emailing Invoice via Outlook... Please Wait.")
+	Function.Intrinsic.String.Split("Invoice*!*Order#*!*Inv Date","*!*",variable.local.sTitles)
+	Function.Intrinsic.String.Split("1000*!*1000*!*1000","*!*",variable.local.iWidths)
+	Function.Intrinsic.UI.Browser("Select a job","con","select distinct Invoice, Order_No, Date_Invoice from v_ORDER_HIST_LINE order by Invoice ",Variable.Local.sTitles,Variable.Local.iWidths,Variable.Local.sRet)
+	Function.Intrinsic.Control.If(Variable.Local.sRet,"=","***CANCEL***")
+		Function.Intrinsic.UI.Msgbox("No Invoice Was Selected!")
+		f.Intrinsic.Control.CallSub(unload)
+	Function.Intrinsic.Control.Else
+		Function.Intrinsic.String.Split(Variable.Local.sRet,"*!*",Variable.Local.sRet)
+'		f.Intrinsic.UI.Msgbox(v.Local.sRet(0))
+		
+		Function.Intrinsic.String.Build("{0}!*!",v.Local.sRet(0).trim,V.Local.sParams)
+		F.Global.General.CallWrapperSyncBIO(200900,V.Local.sParams)'Builds BI data to PRT_LASR_INVOICE table, but does not call report to print
+		
+		'Checking what report ID to use for generating Crystal Report
+		Function.Intrinsic.Control.CallSub(getreportid)'Returns report ID used in BI data in a args named ReportID, if return is -1 the callwrapper failed and BI data was not generated properly
+		
+		'delete existing records from BI table.
+		f.Intrinsic.String.Build("Delete from PRT_LASER_INVOICE where TERMINAL_NO='{0}' and INVOICE_NO<>'{1}'",v.Caller.Terminal,v.Local.sRet(0).trim,v.Local.sSQL)
+		f.ODBC.Connection!con.Execute(v.Local.sSQL)
+		
+		Function.Intrinsic.Control.If(V.Args.ReportID,=,-1)
+			'No report ID found, this is a sign the callwrapper failed to generate the BI data
+			f.Intrinsic.UI.Msgbox("No Invoice Report Active")
+			Function.Intrinsic.Control.CallSub(unload)
+		Function.Intrinsic.Control.EndIf
+		
+		'Making sure invoices dir exists
+		Function.Intrinsic.Control.CallSub(createinvoicedir)
+			
+		'Building file path for saving
+		f.Intrinsic.String.Build("{0}\5358\{1}.pdf",v.Caller.FilesDir,v.Local.sRet(0).trim,v.Local.sInvoiceFQP)
+		
+		f.Intrinsic.Debug.SetLA(v.Local.sInvoiceFQP)
+		
+		'Include Tracking Number option check
+		Function.Global.General.ReadOption(402134,0,False,"00000",V.Global.bTracking)
+		
+		'Building params name and values list for Crystal Report
+		V.Local.sParams.Set("REPORTID*!*TERMINAL*!*PROGRAM*!*TRACK*!*IVCTYPE*!*PRTSHIP*!*PRTORD")
+		f.Intrinsic.Control.If(v.Global.bTracking,=,True)
+			Function.Intrinsic.String.Build("{0}*!*{1}*!*{2}*!*{3}*!*{4}*!*{5}*!*{6}",V.Args.ReportID,V.Caller.Terminal,V.Caller.Caller,"Y","","","",V.Local.sValues)
+		f.Intrinsic.Control.Else
+			Function.Intrinsic.String.Build("{0}*!*{1}*!*{2}*!*{3}*!*{4}*!*{5}*!*{6}",V.Args.ReportID,V.Caller.Terminal,V.Caller.Caller,"","","","",V.Local.sValues)
+		f.Intrinsic.Control.EndIf
+		
+		'Getting Run ID
+		F.Global.BI.GetRunID(V.Local.iRunID)
+		'Getting log ID
+		F.Global.BI.StartLogging(V.Local.iRunID,V.Args.ReportID,-1,"",V.Local.iLogID)
+		
+		'Callreport to generate data
+		F.Global.BI.RunReportPreProcessor(V.Local.iRunID,V.Local.iLogID,V.Local.sParams,V.Local.sValues,"",4,True,"",-1,"",0,V.Local.sInvoiceFQP,"",V.Local.iRet)
+		
+		'get contact email from BI Table
+		f.Intrinsic.String.Build("Select distinct contact_email from v_PRT_LASER_INVOICE where Terminal_No = '{0}' and ltrim(rtrim(contact_email)) <> ''",v.Caller.Terminal,v.Local.sSql)
+		f.ODBC.Connection!con.openrecordsetro("rstemail",v.Local.sSql)
+		f.Intrinsic.Control.If(v.ODBC.con!rstemail.EOF,<>,True)
+			v.Local.sEmail.Set(v.ODBC.con!rstemail.FieldValLTrim!CONTACT_EMAIL)
+		f.Intrinsic.Control.Else
+			'prompt for email address
+			f.Intrinsic.UI.Msgbox("No Email Address on Sales Order Header; add to email before sending!")
+			v.Local.sEmail.Set("name@company.com")
+		f.Intrinsic.Control.EndIf
+		
+		f.Intrinsic.String.Build("Invoice: {0}",v.Local.sRet(0).trim,v.Local.sSubject)
+		
+		'trigger outlook email
+		v.Local.sParams.Redim(0,0)
+		v.Local.sValues.Redim(0,0)
+		'reusing ParamVal for calling other script async.
+		f.Intrinsic.String.Build("{0}\GCG_5358_SendOutlookEmail.gas",v.Caller.GasDir,v.Local.sParams)
+		f.Intrinsic.String.Build("{0}!*!{1}!*!{2}",v.Local.sEmail,v.Local.sSubject,v.Local.sInvoiceFQP,v.Local.sValues)
+
+		f.Global.General.CallAsyncGAS(v.Local.sParams,v.Local.sValues,2,v.Local.iRet)
+		f.Intrinsic.UI.CloseWaitDialog
+'		f.Automation.MSOutlook.ComposeEmailHTMLModal(v.Local.sEmail,v.Local.sSubject,"",v.Local.sInvoiceFQP)
+	Function.Intrinsic.Control.EndIf
+
+	
+
+	F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+		F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}","",V.Ambient.NewLine,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Local.sError)
+		F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.EndIf
+Function.Intrinsic.Control.EndTry
+Program.Sub.printinvoice.End
+
+Program.Sub.CreateInvoiceDir.Start
+F.Intrinsic.Control.Try
+	V.Local.sError.Declare(String," ")
+	'Description::  Creates directory for saving invoice PDFs.
+	'Args:: None
+	'Returns:: None
+	
+	V.Local.sFolder.Declare(String)
+	V.Local.bExists.Declare(Boolean)
+	
+	'Making sure invoices dir exists
+	Function.Intrinsic.String.Build("{0}\5358",v.Caller.FilesDir,V.Local.sFolder)
+	F.Intrinsic.File.DirExists(V.Local.sFolder,V.Local.bExists)
+	Function.Intrinsic.Control.If(V.Local.bExists,=,false)
+		'Creating directory if it does not exist
+		Function.Intrinsic.File.CreateDir(V.Local.sFolder)
+	Function.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+		F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}","",V.Ambient.NewLine,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Local.sError)
+		F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.EndIf
+Function.Intrinsic.Control.EndTry
+Program.Sub.CreateInvoiceDir.End
+
+Program.Sub.unload.Start
+'just end
+f.Intrinsic.Control.End
+Program.Sub.unload.End
+
+Program.Sub.getreportid.Start
+F.Intrinsic.Control.Try
+	V.Local.sError.Declare(String," ")
+		'Description::  Gets the report ID from invoice BI table to use for printing report.
+		'Args:: None
+		'Returns:: ReportID as Long
+		
+		V.Local.sSql.Declare(String)
+		V.Local.sReportID.Declare(String)
+		
+		'Gets the report ID that the callwrapper used in BI table.  This is because CORE already has the logic within it's processes to determine the correct report ID to use for invoice
+		Function.Intrinsic.String.Build("Select DISTINCT RPTID from PRT_LASER_INVOICE where TERMINAL_NO = '{0}'",V.Caller.Terminal,V.Local.sSql)
+		'F.ODBC.Connection!con.OpenLocalRecordsetRO("rst",V.Local.sSql)
+		f.ODBC.Connection!con.Executeandreturn(v.Local.sSql,v.Local.sReportID)
+		'Function.Intrinsic.Control.If(V.ODBC.con!rst.EOF,=,false)
+		F.Intrinsic.Control.If(v.Ambient.executeandreturneof.not)
+			'V.Local.sReportID.Set(V.ODBC.con!rst.FieldValTrim!RPTID)
+			'Return report ID used in BI data
+			Function.Intrinsic.Variable.AddRV("ReportID",V.Local.sReportID)
+		Function.Intrinsic.Control.Else
+			'Could not find BI data, this is a sign that callwrapper failed, so return -1
+			Function.Intrinsic.Variable.AddRV("ReportID",-1)
+		Function.Intrinsic.Control.EndIf
+		'F.ODBC.con!rst.Close
+
+	F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+		F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}","",V.Ambient.NewLine,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Local.sError)
+		F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.EndIf
+Function.Intrinsic.Control.EndTry
+Program.Sub.getreportid.End
